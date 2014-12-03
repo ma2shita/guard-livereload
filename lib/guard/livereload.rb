@@ -3,7 +3,6 @@ require 'guard/plugin'
 
 module Guard
   class LiveReload < Plugin
-    require 'guard/livereload/websocket'
     require 'guard/livereload/reactor'
 
     attr_accessor :reactor, :options
@@ -24,7 +23,7 @@ module Guard
     end
 
     def stop
-      reactor.stop
+      nil
     end
 
     def run_on_modifications(paths)

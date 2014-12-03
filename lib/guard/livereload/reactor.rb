@@ -1,19 +1,17 @@
 require 'multi_json'
+require "reel"
 
 module Guard
   class LiveReload < Plugin
-    class Reactor
-      attr_reader :web_sockets, :thread, :options, :connections_count
+    class Reactor < Reel::Server::HTTP
+      attr_reader :web_sockets, :options
 
-      def initialize(options)
-        @web_sockets       = []
-        @options           = options
-        @thread            = Thread.new { _start_reactor }
-        @connections_count = 0
-      end
-
-      def stop
-        thread.kill
+      def initialize(opts)
+        @web_sockets = []
+        @options = opts
+        UI.info "LiveReload is waiting for a browser to connect."
+        UI.debug @options
+        super(options[:host], options[:port].to_i, &method(:on_connection))
       end
 
       def reload_browser(paths = [])
@@ -25,9 +23,40 @@ module Guard
 
         paths.each do |path|
           data = _data(path)
-          UI.debug(data)
-          web_sockets.each { |ws| ws.send(MultiJson.encode(data)) }
+          UI.debug data
+          web_sockets.each { |ws| ws << MultiJson.encode(data) }
         end
+      end
+
+      def on_connection(conn)
+        conn.each_request do |req|
+          if req.websocket?
+            web_sockets << req.websocket
+            conn.detach
+            route_websocket req.websocket
+          else
+            route_request conn, req
+          end
+        end
+      end
+
+      def route_request(conn, req)
+        case req.url
+        when %r{^/livereload\.js.*}
+          UI.debug "Serve /livereload.js"
+          conn.respond :ok, {"content-type" => 'application/javascript'}, serve_livereload_js
+        when "/"
+          conn.respond :ok, {"content-type" => 'text/html'}, serve_index_html
+        else
+          conn.respond :not_found, "Not Found"
+        end
+      end
+
+      def route_websocket(ws)
+        UI.debug "Browser connected. Response HELLO"
+        hello = livereload_hello
+        UI.debug hello
+        ws << hello
       end
 
     private
@@ -44,40 +73,16 @@ module Guard
         data
       end
 
-      def _start_reactor
-        EventMachine.epoll
-        EventMachine.run do
-          EventMachine.start_server(options[:host], options[:port], WebSocket, {}) do |ws|
-            ws.onopen    { _connect(ws) }
-            ws.onclose   { _disconnect(ws) }
-            ws.onmessage { |msg| _print_message(msg) }
-          end
-          UI.info "LiveReload is waiting for a browser to connect."
-        end
+      def serve_livereload_js
+        open(File.join(File.dirname(File.expand_path(__FILE__)), "..", "..", "..", "vendor", "assets", "livereload.js")).read
       end
 
-      def _connect(ws)
-        @connections_count += 1
-        UI.info "Browser connected." if connections_count == 1
-
-        ws.send MultiJson.encode(
-          command:    'hello',
-          protocols:  ['http://livereload.com/protocols/official-7'],
-          serverName: 'guard-livereload'
-        )
-        @web_sockets << ws
-      rescue
-        UI.error $!
-        UI.error $!.backtrace
+      def serve_index_html
+        open(File.join(File.dirname(File.expand_path(__FILE__)), "..", "..", "..", "vendor", "assets", "example.html")).read
       end
 
-      def _disconnect(ws)
-        @web_sockets.delete(ws)
-      end
-
-      def _print_message(message)
-        message = MultiJson.decode(message)
-        UI.info "Browser URL: #{message['url']}" if message['command'] == 'url'
+      def livereload_hello
+        MultiJson.encode(:command => 'hello', :protocols => ['http://livereload.com/protocols/official-7'], :serverName => 'guard-livereload')
       end
 
     end
