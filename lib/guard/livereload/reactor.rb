@@ -29,11 +29,12 @@ module Guard
       end
 
       def on_connection(conn)
-        conn.each_request do |req|
+        while req = conn.request
           if req.websocket?
             web_sockets << req.websocket
             conn.detach
             route_websocket req.websocket
+            return
           else
             route_request conn, req
           end
